@@ -1,8 +1,8 @@
 # CIS4281 Class Resources
 This repo holds code related to the CIS4281 class at MSU Denver. 
 
-Currently, the `ansible` directory contains a playbook named `` implements the class project via. 
-It can be quite robustified to deploy to multiple hosts, primarily by modifying the 
+Currently, the `ansible` directory contains a playbook named `web_project.yml` implements the class project via an Ansible 
+Playbook. It currently demos one server, but can be robustified to deploy to multiple hosts, primarily by modifying the 
 inventory (the body of the tasks are well-suited for handling multiple hosts with the `inventory_hostname` 
 references in variable dicts).
 
