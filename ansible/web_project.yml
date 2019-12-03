@@ -1,0 +1,197 @@
+---
+- name:         Install and configure a IPv4 and IPv6 website
+  hosts:        all
+  gather_facts: yes
+  serial:       1
+  become:       yes
+
+  vars:
+    fqdns:
+      demo: "www.cis.bcbb.io"
+    mgmt_addresses:
+     demo:
+        - "10.42.81.210/24"
+    web_addresses:
+      demo:
+        v4: "10.10.128.210/23"
+        v6: "2001:470:4b:572::210/64"
+      prof:
+        v4: "10.10.128.200/23"
+        v6: "2001:470:4b:572::200/64"
+
+  pre_tasks:
+    - name: Verify Ansible meets minimum version requirements
+      assert:
+        that: "ansible_version.full is version_compare('2.8', '>=')"
+        msg: >
+          "You must update Ansible to at least 2.8 to use this playbook"
+
+  tasks:
+    - name: System Config - Set system hostname to FQDN
+      hostname:
+        name: "{{ fqdns[inventory_hostname] }}"
+
+    - name: System Config - Set DNS Resolver and ens224 network addresses
+      template:
+        src: templates/netplan.j2
+        dest: "/etc/netplan/01-ansible-config.yaml"
+        owner: root
+        group: root
+        mode: 0640
+      register: netplan_config
+
+    - name: Network Config - Apply netplan config
+      command: netplan apply
+      when: netplan_config.changed
+
+    - name: Network Config - Assert DNS resolution works (IPv4, bcbb.io)
+      debug: msg="{{ lookup('dig', 'bcbb.io', 'qtype=A') }}"
+      register: bcbb_wan_ipv4
+
+    - name: Network Config - Assert DNS resolution works (IPv6, google.com)
+      debug: msg="{{ lookup('dig', 'google.com', 'qtype=AAAA') }}"
+
+    - name: Package Install - certbot ppa
+      apt_repository:
+        repo: 'ppa:certbot/certbot'
+
+    - name: Package Install - nginx, certbot, and NFS utilities
+      apt:
+        name:
+          - nginx
+          - certbot
+          - nfs-common
+          - python-certbot-nginx
+        update_cache: yes
+        state: latest
+        cache_valid_time: 3600
+
+    - name: Package Install - Ensure nginx is running
+      systemd:
+        name: nginx
+        state: started
+
+    - name: Assert nginx is successfully serving content from localhost
+      uri:
+        url: http://localhost
+        method: GET
+        return_content: yes
+      register: post_nginx_install_request
+      failed_when: >
+        ( post_nginx_install_request.status != 200 )
+
+    - name: Nginx Config - Clean all existing config
+      shell: cd /etc/nginx/sites-enabled/ && find -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
+
+    - name: Nginx Config - Create HTTPS and Redirect configuration objects
+      template:
+        src: "templates/{{ item }}.j2"
+        dest: "/etc/nginx/sites-enabled/{{ item }}"
+        owner: root
+        group: root
+        mode: 0640
+      with_items:
+        - nginx_redirects
+        - nginx_https
+
+    - name: Nginx Config - Default index.html
+      template:
+        src: "templates/index.html.j2"
+        dest: "/var/www/html/index.html"
+        owner: www-data
+        group: www-data
+        mode: 0640
+
+    - name: Nginx Config - NFS Error Page Mount
+      mount:
+        path: /nfs/web
+        src: 10.42.81.252:/var/nfs/web
+        fstype: nfs
+        opts: auto,noexec,_netdev,tcp,hard,intr
+        state: mounted
+
+    - name: DNS Config - Register A and AAAA records
+      uri:
+        url: "https://api.cloudflare.com/client/v4/zones/{{ dns_zone_id }}/dns_records"
+        method: POST
+        body_format: json
+        body: |
+           {
+              "type": "{{ item.type }}",
+              "proxied": false,
+              "name": "{{ fqdns[inventory_hostname] }}",
+              "content": "{{ item.content }}",
+              "ttl": 120
+            }
+        headers:
+          Authorization: "Bearer {{ dns_api_key }}"
+        return_content: yes
+      failed_when: >
+        ( dns_registration_response.status != 200 ) and
+        ( "The record already exists" not in dns_registration_response.content )
+      register: dns_registration_response
+      with_items:
+        - { type: "A", content: "{{ bcbb_wan_ipv4.msg }}" }
+        - { type: "AAAA", content: "{{ web_addresses[inventory_hostname].v6 | ipaddr('address') }}" }
+
+    - name: Nginx Config - Fetch SSL Certificates via certbot
+      command: certbot --agree-tos --nginx --domains www.cis.bcbb.io -n
+
+    - name: Nginx Config - Apply all SSL and HTTP configuration changes
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Firewall Config - SSH on Management NIC
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        from_ip: "{{ mgmt_addresses[inventory_hostname] | first | ipaddr('network/prefix') }}"
+        to_ip: "{{ mgmt_addresses[inventory_hostname] | first | ipaddr('address') }}"
+        interface: ens192
+        direction: in
+        state: enabled
+
+    - name: Firewall Config - NFS on Management NIC
+      ufw:
+        rule: allow
+        port: "2049"
+        proto: tcp
+        from_ip: "{{ mgmt_addresses[inventory_hostname] | first | ipaddr('address') }}"
+        to_ip: 10.42.81.252
+        direction: out
+        interface: ens192
+        state: enabled
+
+    - name: Firewall Config - HTTP on Web Server NIC
+      ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+        interface: ens224
+        direction: in
+        state: enabled
+
+    - name: Firewall Config - HTTPS on Web Server NIC
+      ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+        interface: ens224
+        direction: in
+        state: enabled
+
+    - name: Backup - NFS Remote Server Mount
+      mount:
+        path: /nfs/backup
+        src: 10.42.81.252:/var/nfs/backup/{{ fqdns[inventory_hostname] }}
+        fstype: nfs
+        opts: auto,noexec,_netdev,tcp,hard,intr
+        state: mounted
+
+    - name: Backup - Nightly tar of nginx and webroot
+      cron:
+        name: "Backup Web config and content"
+        hour: 2
+        job: "tar -czf /nfs/backup/web_backup_`date +%s`.tgz -C var/www/html/* etc/nginx/*"

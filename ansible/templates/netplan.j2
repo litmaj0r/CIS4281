@@ -1,0 +1,19 @@
+network:
+  ethernets:
+    ens192:
+      accept-ra: no
+      dhcp4: false
+      addresses: {{ mgmt_addresses[inventory_hostname]  }}
+      gateway4: 10.42.81.254
+      nameservers:
+        addresses: [ 1.1.1.1 ]
+    ens224:
+      dhcp4: false
+      accept-ra: no
+      addresses: [ "{{ web_addresses[inventory_hostname].v4 }}", "{{  web_addresses[inventory_hostname].v6 }}" ]
+      gateway4: 10.10.129.254
+      gateway6: "2001:470:4b:572::1"
+      #gateway6: "fe80::5ee2:8cff:fed5:15d4" # Alternatively the link-local GW can be used
+      nameservers:
+        addresses: [ "2606:4700:4700::1111" ]
+  version: 2

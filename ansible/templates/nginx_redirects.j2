@@ -1,0 +1,6 @@
+server {
+  listen {{ web_addresses[inventory_hostname].v4  | ipaddr('address') }}:80 default_server;
+  listen [{{ web_addresses[inventory_hostname].v6 | ipaddr('address') }}]:80 default_server;
+  server_name {{ fqdns[inventory_hostname] }};
+  return 301 https://{{ fqdns[inventory_hostname] }}$request_uri;
+}
