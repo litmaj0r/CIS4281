@@ -27,10 +27,45 @@
           "You must update Ansible to at least 2.8 to use this playbook"
 
   tasks:
+#     This changes the hostname from "project " to our FQDN
+#     "project10" becomes "demo.cis.bcbb.io"
+#     Equivalent command:
+#     sudo hostnamectl set-hostname demo.cis.bcbb.io
+#     sudo echo "demo.cis.bcbb.io" | sudo tee /etc/hostname
     - name: System Config - Set system hostname to FQDN
       hostname:
         name: "{{ fqdns[inventory_hostname] }}"
 
+#     This allows hostname to IP resolutuon, which is checked on many commands run
+#     The line "10.10.128.210 demo.cis.bcbb.io" gets added to "/etc/hosts"
+    - name: System Config - Add hostname to hosts file
+      lineinfile:
+        path: /etc/hosts
+        regexp: "{{ fqdns[inventory_hostname] }}$"
+        line: "{{ web_addresses[inventory_hostname].v4 | ipaddr('address') }} {{ fqdns[inventory_hostname] }}"
+
+#     This replaces ens192 and ens224 configuration to look exactly like that in the template file
+#     Note the "nameservers" in ens192 and "addresses, gateway4, gateway6, and nameservers" entries in ens224
+#     Post-template netplan file (/etc/netplan/01-ansible-config.yaml):
+#      network:
+#        ethernets:
+#          ens192:
+#            accept-ra: no
+#            dhcp4: false
+#            addresses: ['10.42.81.210/24']
+#            gateway4: 10.42.81.254
+#            nameservers:
+#              addresses: [ 1.1.1.1 ]
+#          ens224:
+#            dhcp4: false
+#            accept-ra: no
+#            addresses: [ "10.10.128.210/23", "2001:470:4b:572::210/64" ]
+#            gateway4: 10.10.129.254
+#            gateway6: "2001:470:4b:572::1"
+#            #gateway6: "fe80::5ee2:8cff:fed5:15d4" # Alternatively the link-local GW can be used
+#            nameservers:
+#              addresses: [ "2606:4700:4700::1111" ]
+#        version: 2
     - name: System Config - Set DNS Resolver and ens224 network addresses
       template:
         src: templates/netplan.j2
@@ -40,21 +75,36 @@
         mode: 0640
       register: netplan_config
 
+#   Equivalent command:
+#   sudo netplan apply
     - name: Network Config - Apply netplan config
       command: netplan apply
       when: netplan_config.changed
 
+#   Equivalent command:
+#   dig bcbb.io
+#   Example Output:
+#   71.218.92.187
     - name: Network Config - Assert DNS resolution works (IPv4, bcbb.io)
       debug: msg="{{ lookup('dig', 'bcbb.io', 'qtype=A') }}"
       register: bcbb_wan_ipv4
 
+#   Equivalent command:
+#   dig +short AAAA google.com @2606:4700:4700::1111
+#   Example Output:
+#   2607:f8b0:400f:800::200e
     - name: Network Config - Assert DNS resolution works (IPv6, google.com)
       command: dig +short AAAA google.com @2606:4700:4700::1111
 
+#   Equivalent command:
+#   sudo add-apt-repository ppa:certbot/certbot
     - name: Package Install - certbot ppa
       apt_repository:
         repo: 'ppa:certbot/certbot'
 
+#   Equivalent command:
+#   sudo apt update
+#   sudo apt install nginx certbot nfs-common python-certbot-nginx
     - name: Package Install - nginx, certbot, and NFS utilities
       apt:
         name:
@@ -66,11 +116,15 @@
         state: latest
         cache_valid_time: 3600
 
+#   Equivalent command:
+#   sudo systemctl start nginx
     - name: Package Install - Ensure nginx is running
       systemd:
         name: nginx
         state: started
 
+#   Equivalent command:
+#   curl -v http://localhost
     - name: Assert nginx is successfully serving content from localhost
       uri:
         url: http://localhost
@@ -80,36 +134,30 @@
       failed_when: >
         ( post_nginx_install_request.status != 200 )
 
-    - name: Nginx Config - Clean all existing config
-      shell: cd /etc/nginx/sites-enabled/ && find -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
-
-    - name: Nginx Config - Create HTTPS and Redirect configuration objects
-      template:
-        src: "templates/{{ item }}.j2"
-        dest: "/etc/nginx/sites-enabled/{{ item }}"
-        owner: root
-        group: root
-        mode: 0640
-      with_items:
-        - nginx_redirects
-        - nginx_https
-
-    - name: Nginx Config - Default index.html
-      template:
-        src: "templates/index.html.j2"
-        dest: "/var/www/html/index.html"
-        owner: www-data
-        group: www-data
-        mode: 0640
-
-    - name: Nginx Config - NFS Error Page Mount
-      mount:
-        path: /nfs/web
-        src: 10.42.81.252:/var/nfs/web
-        fstype: nfs
-        opts: auto,noexec,_netdev,tcp,hard,intr
-        state: mounted
-
+#   Equivalent commands:
+#   curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zone_identifier/dns_records" \
+#   -H "Authorization: Bearer $auth_key" \
+#   -H "Content-Type: application/json" \
+#   --data "\
+#   {\
+#     \"type\":\"A\",\
+#     \"proxied\":false,\
+#     \"name\":\"demo.cis.bcbb.io\",\
+#     \"content\":\"71.218.92.187\",\
+#     \"ttl\":120\
+#   }"
+#
+#   curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zone_identifier/dns_records" \
+#   -H "Authorization: Bearer $auth_key" \
+#   -H "Content-Type: application/json" \
+#   --data "\
+#   {\
+#     \"type\":\"AAAA\",\
+#     \"proxied\":false,\
+#     \"name\":\"demo.cis.bcbb.io\",\
+#     \"content\":\""2001:470:4b:572::210\",\
+#     \"ttl\":120\
+#   }"
     - name: DNS Config - Register A and AAAA records
       uri:
         url: "https://api.cloudflare.com/client/v4/zones/{{ dns_zone_id }}/dns_records"
@@ -134,14 +182,102 @@
         - { type: "A", content: "{{ bcbb_wan_ipv4.msg }}" }
         - { type: "AAAA", content: "{{ web_addresses[inventory_hostname].v6 | ipaddr('address') }}" }
 
+#   This removes all existing nginx config files (not nginx.conf) to ensure only the
+#   nginx_redirects and nginx_https in the next step are applied
+#   Equivalent Command self explanatory
+    - name: Nginx Config - Clean all existing config
+      shell: cd /etc/nginx/sites-enabled/ && find -mindepth 1 -maxdepth 1 -print0 | xargs -0 rm -rf --
+
+#     This publishes the nginx HTTP redirect and HTTPS server configuration to look exactly like that in the template files
+#     It handles your domain (server_name), nfs error pages (error_page and location=/FILE), and Web NIC lockdown (listen)
+#
+#     Post-template nginx_redirects file (/etc/nginx/sites-enabled/nginx_redirects):
+#      server {
+#        listen 10.10.128.210:80 default_server;
+#        listen [2001:470:4b:572::210]:80 default_server;
+#        server_name demo.cis.bcbb.io;
+#        return 301 https://demo.cis.bcbb.io$request_uri;
+#      }
+#
+#     Post-template nginx_https file (/etc/nginx/sites-enabled/nginx_https):
+#      server {
+#        listen 10.10.128.210:443 ssl;
+#        listen [2001:470:4b:572::210]:443 ssl;
+#
+#        root /var/www/html;
+#        index index.html;
+#
+#        server_name demo.cis.bcbb.io;
+#
+#        ssl_protocols TLSv1.3 TLSv1.2;
+#        ssl_prefer_server_ciphers on;
+#        ssl_ciphers TLS13-CHACHA20-POLY1305-SHA256:TLS13-AES-256-GCM-SHA384:TLS13-AES-128-GCM-SHA256:EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH;
+#
+#        location / {
+#          try_files $uri $uri/ =404;
+#        }
+#
+#        error_page  404 /404.html;
+#        location = /404.html {
+#          root	/nfs/web;
+#        }
+#
+#        error_page   500 502 503 504  /50x.html;
+#        location = /50x.html {
+#          root   /nfs/web;
+#        }
+#      }
+    - name: Nginx Config - Create HTTPS and Redirect configuration objects
+      template:
+        src: "templates/{{ item }}.j2"
+        dest: "/etc/nginx/sites-enabled/{{ item }}"
+        owner: root
+        group: root
+        mode: 0640
+      with_items:
+        - nginx_redirects
+        - nginx_https
+
+#   This publishes a custom index.html for your website to /var/www/html/index.html to look exactly like that in the template file
+#   Rendered output:
+#    <html>
+#    <h1>Welcome!</h1>
+#    <p>This is the default demo webpage for demo.cis.bcbb.io</p>
+#    </html>
+    - name: Nginx Config - Default index.html
+      template:
+        src: "templates/index.html.j2"
+        dest: "/var/www/html/index.html"
+        owner: www-data
+        group: www-data
+        mode: 0640
+
+#   Mount the error_page NFS content
+#   Equivalent commands:
+#   echo "10.42.81.252:/var/nfs/web /nfs/web nfs auto,noexec,_netdev,tcp,hard,intr 0 0" | sudo -a /etc/fstab
+#   sudo mount -a
+    - name: Nginx Config - NFS Error Page Mount
+      mount:
+        path: /nfs/web
+        src: 10.42.81.252:/var/nfs/web
+        fstype: nfs
+        opts: auto,noexec,_netdev,tcp,hard,intr
+        state: mounted
+
+#   Generate the certificates and keys to be used with SSL in nginx
+#   Equivalent Command self explanatory
     - name: Nginx Config - Fetch SSL Certificates via certbot
       command: certbot --agree-tos --nginx --domains {{ fqdns[inventory_hostname] }} -n
 
+#   Equivalent command:
+#   sudo systemctl restart nginx
     - name: Nginx Config - Apply all SSL and HTTP configuration changes
       systemd:
         name: nginx
         state: restarted
 
+#   Equivalent command:
+#   sudo ufw allow in on ens192 from 10.42.81.0/24 to 10.42.81.210 port 22 proto tcp
     - name: Firewall Config - SSH on Management NIC
       ufw:
         rule: allow
@@ -153,6 +289,8 @@
         direction: in
         state: enabled
 
+#   Equivalent command:
+#   sudo ufw allow out on ens192 from 10.42.81.210 to 10.42.81.252 port 2049 proto tcp
     - name: Firewall Config - NFS on Management NIC
       ufw:
         rule: allow
@@ -164,6 +302,8 @@
         interface: ens192
         state: enabled
 
+#   Equivalent command:
+#   sudo ufw allow in on ens224 from any to any port 80 proto tcp
     - name: Firewall Config - HTTP on Web Server NIC
       ufw:
         rule: allow
@@ -173,6 +313,8 @@
         direction: in
         state: enabled
 
+#   Equivalent command:
+#   sudo ufw allow in on ens224 from any to any port 443 proto tcp
     - name: Firewall Config - HTTPS on Web Server NIC
       ufw:
         rule: allow
@@ -182,6 +324,10 @@
         direction: in
         state: enabled
 
+#   Mount the directory to be used for backup via NFS (writeable)
+#   Equivalent commands:
+#   echo "10.42.81.252:/var/nfs/backup/demo.cis.bcbb.io /nfs/backup nfs auto,noexec,_netdev,tcp,hard,intr 0 0" | sudo -a /etc/fstab
+#   sudo mount -a
     - name: Backup - NFS Remote Server Mount
       mount:
         path: /nfs/backup
@@ -190,8 +336,14 @@
         opts: auto,noexec,_netdev,tcp,hard,intr
         state: mounted
 
+#  Perform backups by simply generating a compressed tar file in the NFS backup directory
+#  (which will place it on the remote server with a unique timestamp (unix epoch) every day at 2am)
+#  Equivalent commands:
+#  sudo crontab -e
+#  * 2 * * * tar -czf /nfs/backup/web_backup_`date +\%s`.tgz -C var/www/html/* etc/nginx/*
+#  :wq
     - name: Backup - Nightly tar of nginx and webroot
       cron:
         name: "Backup Web config and content"
-        hour: 0
+        hour: 2
         job: "tar -czf /nfs/backup/web_backup_`date +\\%s`.tgz -C var/www/html/* etc/nginx/*"
