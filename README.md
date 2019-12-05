@@ -1,7 +1,7 @@
 # CIS4281 Class Resources
 This repo holds code related to the CIS4281 class at MSU Denver. 
 
-Currently, the `ansible` directory contains a playbook named `web_project.yml` implements the class project via an Ansible 
+Currently, the `ansible` directory contains a playbook named `server_init` which implements the class project via an Ansible 
 Playbook. It currently demos one server, but can be robustified to deploy to multiple hosts, primarily by modifying the 
 inventory (the body of the tasks are well-suited for handling multiple hosts with the `inventory_hostname` 
 references in variable dicts).
@@ -19,7 +19,7 @@ Ansible Vault holds encrypted secrets needed to run the playbook successfully. Y
   
 
 ## Running the Playbook
-Ensure the `vars` in `web_project.yml` reflect 
+Ensure the `vars` in `playbooks/server_init/main.yml` reflect 
 
 1) the inventory names of your hosts (so lookups can occur)
 1) the proper FQDN, MGMT IP, and Web IPv4 and IPv6 addresses 
@@ -27,5 +27,6 @@ Ensure the `vars` in `web_project.yml` reflect
 After this is performed, and a vault called `secrets` is created, run the following command to kick off the playbook: 
 
 ```
-$ ansible-playbook -i inventory/servers.yml --ask-vault-pass -e @secrets -vv web_project.yml
+cd playbooks/server_init
+ansible-playbook -i inventory/servers.yml --ask-vault-pass -e @secrets -vv main.yml
 ```
